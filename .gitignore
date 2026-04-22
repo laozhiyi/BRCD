@@ -1,0 +1,61 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.cpython-*.pyc
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project-specific: large binaries and generated artifacts
+*.zip
+*.pt
+*.pkl
+*.log
+
+# Data files (large image datasets / ground truth binaries)
+data/cifar10/
+data/SCID/attack_images/
+data/MyScreenDataset/images/
+data/MyScreenDataset/attack_images/
+data/MyScreenDataset/gnd.pkl
+data/SCID/gnd_SCID.pkl
+
+# Checkpoints
+checkpoints/
+
+# Logs
+logs/
+training.log
+
+# Zip of the project itself
+BRCD-main.zip

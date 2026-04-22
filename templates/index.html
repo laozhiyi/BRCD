@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>屏幕图像版权检测系统 (R-BRCD)</title>
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://unpkg.com/element-plus"></script>
+    <script src="https://unpkg.com/@element-plus/icons-vue"></script>
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <style>
+        #app { padding: 20px; }
+        .el-header { text-align: center; }
+        .el-header h1 { margin-bottom: 0; }
+        .control-panel { padding: 20px; }
+        .results-panel { padding: 20px; } 
+        .result-image-card { margin: 5px; }
+        .result-image { width: 100%; height: 150px; object-fit: cover; }
+        .stats-bar { display: flex; justify-content: space-around; margin-bottom: 20px; }
+        .el-statistic { text-align: center; }
+        .results-scrollbar { }
+        .ground-truth-list .el-tag { margin: 2px; }
+        /* [新增] 1v1 对比样式 */
+        .compare-uploader .el-upload, .compare-uploader .el-upload-dragger {
+            width: 100%;
+        }
+        .compare-image {
+            width: 100%;
+            height: 200px;
+            object-fit: contain;
+            border: 1px dashed #d9d9d9;
+            border-radius: 6px;
+        }
+        .compare-result-card {
+            margin-top: 20px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <el-container>
+            <el-header>
+                <h1>基于知识蒸馏的屏幕图像版权检测系统 (R-BRCD)</h1>
+                <p>
+                    演示“高推理延迟”  问题的解决方案
+                </p>
+            </el-header>
+
+            <el-tabs v-model="activeTab" type="border-card">
+                
+                <el-tab-pane label="版权检索 (1-N)" name="retrieval">
+                    <el-container>
+                        <el-aside width="350px">
+                            <el-card class="control-panel" shadow="always">
+                                <template #header>
+                                    <div><strong>查询设置</strong></div>
+                                </template>
+
+                                <el-upload
+                                    ref="uploader"
+                                    action="#"
+                                    :auto-upload="false"
+                                    :on-exceed="handleFileExceed"
+                                    :on-change="handleFileChange"
+                                    drag
+                                >
+                                    <el-icon class="el-icon--upload"><upload-filled /></el-icon>
+                                    <div class="el-upload__text">
+                                        拖拽文件到此 或 <em>点击上传查询图像</em>
+                                    </div>
+                                </el-upload>
+                                <el-image v-if="query.previewUrl" :src="query.previewUrl" style="width: 100%; margin-top: 10px;" fit="contain"></el-image>
+
+                                <el-card v-if="results.ground_truth.length > 0" shadow="never" style="margin-top: 15px;" class="ground-truth-list">
+                                    <template #header>
+                                        <div>
+                                            <strong v-text="'所有 ' + results.ground_truth.length + ' 个正确副本'"></strong>
+                                        </div>
+                                    </template>
+                                    <el-scrollbar height="200px">
+                                        <el-tag v-for="filename in results.ground_truth" :key="filename" type="info" v-text="filename">
+                                        </el-tag>
+                                    </el-scrollbar>
+                                </el-card>
+
+                                <el-divider>选择检索模型</el-divider>
+                                <el-radio-group v-model="query.model" style="width: 100%;">
+                                    <el-radio-button label="student" style="width: 50%;">
+                                        学生模型 (Ours)
+                                    </el-radio-button>
+                                    <el-radio-button label="teacher" style="width: 50%;">
+                                        教师模型 (ViT)
+                                    </el-radio-button>
+                                </el-radio-group>
+                                <el-alert v-if="query.model === 'student'" type="success" :closable="false" style="margin-top: 10px;">
+                                    <b>模型:</b> MobileNetV2<br>
+                                    <b>F1-Score: 0.9840</b><br>
+                                    <b>特点:</b> 轻量级, 低延迟
+                                </el-alert>
+                                <el-alert v-if="query.model === 'teacher'" type="warning" :closable="false" style="margin-top: 10px;">
+                                    <b>模型:</b> ViT-B/16<br>
+                                    <b>F1-Score:</b> 0.9612<br>
+                                    <b>特点:</b> 重量级, 高延迟
+                                </el-alert>
+
+                                <el-divider>检索阈值 (Hamming)</el-divider>
+                                <el-slider v-model="query.threshold" :min="0" :max="64" show-input></el-slider>
+
+                                <el-button 
+                                    type="primary" 
+                                    @click="submitUpload" 
+                                    :disabled="!query.file || loading" 
+                                    v-loading.fullscreen.lock="loading"
+                                    style="width: 100%; margin-top: 20px;"
+                                >
+                                    开始检索
+                                </el-button>
+                            </el-card>
+                        </el-aside>
+
+                        <el-main class="results-panel">
+                            <el-card shadow="never" style="height: 100%;">
+                                
+                                <div class="stats-bar" v-if="results.count !== null">
+                                    <el-statistic title="检索耗时 (ms)" :value="results.time_ms"></el-statistic>
+                                    <el-statistic title="命中副本数量" :value="results.count"></el-statistic>
+                                    <el-statistic title="数据库总量" :value="1360"></el-statistic>
+                                </div>
+                                <el-divider v-if="results.count !== null"></el-divider>
+                                
+                                <el-scrollbar class="results-scrollbar">
+                                    <el-empty v-if="results.matches.length === 0 && !loading" description="未找到匹配的版权副本"></el-empty>
+                                    <el-row :gutter="10">
+                                        <el-col :span="6" v-for="filename in results.matches" :key="filename">
+                                            <el-card :body-style="{ padding: '0px' }" class="result-image-card">
+                                                <el-image :src="'/images/' + filename" class="result-image" fit="cover" :preview-src-list="results.matches.map(f => '/images/' + f)"></el-image>
+                                                <div style="padding: 5px; font-size: 12px; text-align: center;">
+                                                    <span v-text="filename"></span>
+                                                </div>
+                                            </el-card>
+                                        </el-col>
+                                    </el-row>
+                                </el-scrollbar>
+                            </el-card>
+                        </el-main>
+                    </el-container>
+                </el-tab-pane>
+
+                <el-tab-pane label="图像对比 (1-1)" name="compare">
+                    <el-container>
+                        <el-row :gutter="20" style="width: 100%">
+                            <el-col :span="10">
+                                <el-card>
+                                    <template #header><div><strong>图片 A (原始图)</strong></div></template>
+                                    <el-upload
+                                        ref="uploaderA"
+                                        action="#"
+                                        class="compare-uploader"
+                                        :auto-upload="false"
+                                        :limit="1"
+                                        :on-exceed="handleCompareExceedA"
+                                        :on-change="handleCompareChangeA"
+                                        drag
+                                    >
+                                        <el-image v-if="compare.previewA" :src="compare.previewA" class="compare-image"></el-image>
+                                        <div v-else>
+                                            <el-icon class="el-icon--upload"><upload-filled /></el-icon>
+                                            <div class="el-upload__text">拖拽文件或<em>点击上传</em></div>
+                                        </div>
+                                    </el-upload>
+                                </el-card>
+                            </el-col>
+                            
+                            <el-col :span="4">
+                                <el-card style="text-align: center;">
+                                    <template #header><div><strong>对比控制</strong></div></template>
+                                    <el-radio-group v-model="query.model" style="margin-bottom: 20px;">
+                                        <el-radio-button label="student">学生 (快)</el-radio-button>
+                                        <el-radio-button label="teacher">教师 (准)</el-radio-button>
+                                    </el-radio-group>
+                                    <el-button 
+                                        type="primary" 
+                                        @click="handleCompare" 
+                                        :disabled="!compare.fileA || !compare.fileB || loading"
+                                        v-loading.fullscreen.lock="loading"
+                                        style="width: 100%;"
+                                    >
+                                        <el-icon style="margin-right: 5px;"><sort /></el-icon>
+                                        开始对比
+                                    </el-button>
+                                    
+                                    <el-card v-if="compare.result" class="compare-result-card">
+                                        <el-alert v-if="compare.result.is_match" type="success" :closable="false" show-icon>
+                                            <h3>是副本 (相似)</h3>
+                                        </el-alert>
+                                        <el-alert v-else type="error" :closable="false" show-icon>
+                                            <h3>非副本 (不同)</h3>
+                                        </el-alert>
+                                        <el-statistic title="汉明距离" :value="compare.result.distance" style="margin-top: 20px;"></el-statistic>
+                                        <el-tag type="info" style="margin-top: 10px;" v-text="'(判定阈值: ' + compare.result.threshold_used + ')'"></el-tag>
+                                    </el-card>
+                                </el-card>
+                            </el-col>
+
+                            <el-col :span="10">
+                                <el-card>
+                                    <template #header><div><strong>图片 B (修改版/副本)</strong></div></template>
+                                    <el-upload
+                                        ref="uploaderB"
+                                        action="#"
+                                        class="compare-uploader"
+                                        :auto-upload="false"
+                                        :limit="1"
+                                        :on-exceed="handleCompareExceedB"
+                                        :on-change="handleCompareChangeB"
+                                        drag
+                                    >
+                                        <el-image v-if="compare.previewB" :src="compare.previewB" class="compare-image"></el-image>
+                                        <div v-else>
+                                            <el-icon class="el-icon--upload"><upload-filled /></el-icon>
+                                            <div class="el-upload__text">拖拽文件或<em>点击上传</em></div>
+                                        </div>
+                                    </el-upload>
+                                </el-card>
+                            </el-col>
+                        </el-row>
+                    </el-container>
+                </el-tab-pane>
+
+            </el-tabs>
+
+        </el-container>
+    </div>
+
+    <script>
+        const { createApp, ref } = Vue;
+        const app = createApp({
+            data() {
+                return {
+                    activeTab: 'retrieval', // 默认显示第一个标签
+                    loading: false,
+                    // --- 标签 1: 检索 (1-N) ---
+                    query: {
+                        file: null,
+                        previewUrl: null,
+                        model: 'student',
+                        threshold: 12
+                    },
+                    results: {
+                        matches: [],
+                        ground_truth: [], 
+                        time_ms: 0,
+                        count: null
+                    },
+                    uploader: null,
+                    // --- 标签 2: 对比 (1-1) ---
+                    compare: {
+                        fileA: null,
+                        previewA: null,
+                        fileB: null,
+                        previewB: null,
+                        result: null // (例如 {distance: 5, is_match: true, ...})
+                    },
+                    uploaderA: null,
+                    uploaderB: null
+                }
+            },
+            watch: {
+                'query.model'(newModel) {
+                    if (newModel === 'student') {
+                        this.query.threshold = 12; // 蒸馏学生的最佳F1阈值
+                    } else {
+                        this.query.threshold = 19; // 教师模型的最佳召回阈值
+                    }
+                }
+            },
+            mounted() {
+                this.uploader = this.$refs.uploader;
+                this.uploaderA = this.$refs.uploaderA;
+                this.uploaderB = this.$refs.uploaderB;
+            },
+            methods: {
+                // --- 标签 1: 检索 (1-N) 的方法 ---
+                handleFileExceed(files) {
+                    this.uploader.clearFiles();
+                    const file = files[0];
+                    this.uploader.handleStart(file);
+                    this.handleFileChange({ raw: file });
+                },
+                handleFileChange(file) {
+                    this.query.file = file.raw;
+                    this.query.previewUrl = URL.createObjectURL(file.raw);
+                    this.results.matches = [];
+                    this.results.ground_truth = [];
+                    this.results.count = null;
+                },
+                getBaseName(path) {
+                    if (!path) return '';
+                    return path.split('/').pop();
+                },
+                async submitUpload() {
+                    if (!this.query.file) {
+                        this.$message.error('请先上传一张查询图像！');
+                        return;
+                    }
+                    this.loading = true;
+                    this.results.matches = [];
+                    this.results.ground_truth = [];
+                    this.results.count = null;
+                    
+                    const formData = new FormData();
+                    formData.append('file', this.query.file, this.query.file.name); 
+                    formData.append('model', this.query.model);
+                    formData.append('threshold', this.query.threshold);
+
+                    try {
+                        const response = await axios.post('/upload', formData, {
+                            headers: { 'Content-Type': 'multipart/form-data' }
+                        });
+                        
+                        this.results.matches = response.data.matches;
+                        this.results.ground_truth = response.data.ground_truth_matches; 
+                        this.results.time_ms = response.data.time_ms;
+                        this.results.count = response.data.count;
+                        
+                        this.$message({
+                            message: `检索到 ${response.data.count} 个副本，耗时 ${response.data.time_ms} ms.`,
+                            type: 'success',
+                        });
+
+                    } catch (error) {
+                        console.error(error);
+                        this.$message.error('检索失败！请检查后端控制台。');
+                    } finally {
+                        this.loading = false;
+                        this.uploader.clearFiles();
+                    }
+                },
+                
+                // --- [新增] 标签 2: 对比 (1-1) 的方法 ---
+                handleCompareExceedA(files) {
+                    this.uploaderA.clearFiles();
+                    const file = files[0];
+                    this.uploaderA.handleStart(file);
+                    this.handleCompareChangeA({ raw: file });
+                },
+                handleCompareChangeA(file) {
+                    this.compare.fileA = file.raw;
+                    this.compare.previewA = URL.createObjectURL(file.raw);
+                    this.compare.result = null; // 重置结果
+                },
+                handleCompareExceedB(files) {
+                    this.uploaderB.clearFiles();
+                    const file = files[0];
+                    this.uploaderB.handleStart(file);
+                    this.handleCompareChangeB({ raw: file });
+                },
+                handleCompareChangeB(file) {
+                    this.compare.fileB = file.raw;
+                    this.compare.previewB = URL.createObjectURL(file.raw);
+                    this.compare.result = null; // 重置结果
+                },
+                async handleCompare() {
+                    if (!this.compare.fileA || !this.compare.fileB) {
+                        this.$message.error('请上传两张图片进行对比！');
+                        return;
+                    }
+                    this.loading = true;
+                    this.compare.result = null;
+
+                    const formData = new FormData();
+                    formData.append('file1', this.compare.fileA, this.compare.fileA.name);
+                    formData.append('file2', this.compare.fileB, this.compare.fileB.name);
+                    formData.append('model', this.query.model); // 复用同一个模型选择
+
+                    try {
+                        const response = await axios.post('/compare', formData, {
+                            headers: { 'Content-Type': 'multipart/form-data' }
+                        });
+                        
+                        this.compare.result = response.data; // {distance: 5, is_match: true, ...}
+                        
+                        this.$message({
+                            message: `对比完成！汉明距离: ${response.data.distance}`,
+                            type: 'success',
+                        });
+
+                    } catch (error) {
+                        console.error(error);
+                        this.$message.error('对比失败！请检查后端控制台。');
+                    } finally {
+                        this.loading = false;
+                        this.uploaderA.clearFiles();
+                        this.uploaderB.clearFiles();
+                    }
+                }
+            }
+        });
+
+        app.use(ElementPlus);
+        for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
+            app.component(key, component)
+        }
+        app.mount('#app');
+    </script>
+</body>
+</html>
