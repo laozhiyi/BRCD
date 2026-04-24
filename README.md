@@ -10,13 +10,27 @@
 
 ### 主要依赖
 
+#### PyTorch 版本
 + pytorch             1.10.1
 + torchvision         0.11.2
 + numpy               1.19.5
 + pandas              1.1.5
 + Pillow              8.4.0
 
-### 如何运行
+#### PaddlePaddle 版本 (推荐)
++ paddlepaddle-gpu   2.6.0+
++ paddlepaddle       2.6.0+
++ numpy               1.19.5
++ pandas              1.1.5
++ Pillow              8.4.0
+
+> **推荐使用 PaddlePaddle 版本**：项目已包含 `paddle_compat.py` 兼容层，可直接运行 Paddle 版本代码。
+
+---
+
+## 如何运行
+
+### 方式一：使用 PyTorch 版本
 
 我们以使用 **ViT_b_16** 作为教师模型在 CIFAR-10 数据集上运行代码为例进行说明。
 
@@ -34,7 +48,262 @@ sh scripts/run.sh
 sh scripts/ours_distill_run.sh
 ```
 
-### 如何运行 (详细命令)
+### 方式二：使用 PaddlePaddle 版本（推荐）
+
+项目已内置 PyTorch-to-Paddle 兼容层，可直接运行 Paddle 版本脚本：
+
+#### 1. 训练教师模型 (PaddlePaddle)
+
+使用 CIFAR-10 数据集：
+
+```bash
+python main_paddle.py --dataset cifar10 --model_name vit_b_16 --train --encode_length 64 --cuda --device 0 --trail 1 --epochs 200 --lr 0.0005 --num_bad_epochs 3 --batch_size 128 --num_workers 4
+```
+
+使用 SCID 数据集：
+
+```bash
+python main_paddle.py --dataset scid --model_name vit_b_16 --train --encode_length 64 --cuda --device 0 --trail 1 --epochs 100 --lr 0.0005 --num_bad_epochs 10 --batch_size 128 --num_workers 4
+```
+
+#### 2. 训练学生模型 (BRCD 知识蒸馏, PaddlePaddle)
+
+使用 SCID 数据集进行蒸馏：
+
+```bash
+python ours_distill_main_paddle.py --s_model_name mobilenet_v2 --t_model_name vit_b_16 --train --dataset scid --encode_length 64 --cuda --device 0 --trail 1 --alpha 0.8 --epochs 400 --lr 0.0005 --num_bad_epochs 10 --batch_size 128 --num_workers 4
+```
+
+---
+
+## 百度 AI Studio 完整运行指南（SCID 数据集）
+
+### 步骤 1：上传代码并安装依赖
+
+1. 访问 [百度 AI Studio](https://aistudio.baidu.com)
+2. 创建新项目或打开现有项目
+3. 将 `BRCD-main` 文件夹上传到 AI Studio
+
+在 AI Studio 终端中安装依赖：
+
+```bash
+# 安装 PaddlePaddle GPU 版本
+pip install paddlepaddle-gpu==2.6.0 -i https://mirror.baidu.com/pypi/simple
+
+# 安装其他依赖
+pip install numpy pandas Pillow opencv-python tqdm psutil
+```
+
+### 步骤 2：创建必要目录
+
+```bash
+mkdir -p data/SCID/jpg
+mkdir -p data/SCID/attack_images
+mkdir -p checkpoints
+mkdir -p logs
+```
+
+### 步骤 3：下载 SCID 原始图像
+
+```bash
+# 下载数据集
+wget -O SCID.zip "https://www.dropbox.com/s/v0lkzmw6q3i7mxy/SCID.zip?dl=1"
+unzip -o SCID.zip -d data/SCID/
+
+# 如果解压后图片不在 jpg 文件夹中，手动整理
+mkdir -p data/SCID/jpg
+cp data/SCID/*.jpg data/SCID/jpg/ 2>/dev/null || true
+ls data/SCID/jpg/ | head
+```
+
+解压后应得到 **40 张图片**：
+```
+data/SCID/jpg/SCI01.jpg
+data/SCID/jpg/SCI02.jpg
+...
+data/SCID/jpg/SCI40.jpg
+```
+
+### 步骤 4：生成攻击图像
+
+```bash
+python data/SCID/image_attack.py \
+    --input data/SCID/jpg/ \
+    --output data/SCID/attack_images/ \
+    --json data/SCID/gnd_SCID.json \
+    --pkl data/SCID/gnd_SCID.pkl
+```
+
+该脚本对 40 张原始图施加 **8 种图像攻击**（JPEG 压缩 / 裁剪 / 模糊 / 噪声 / 亮度 / 对比度 / 涂鸦 / 混合攻击），每张原始图生成 34 张攻击图，共计 **1360 张**。
+
+### 步骤 5：生成数据集索引文件
+
+```bash
+python create_txt_files.py \
+    --gnd data/SCID/gnd_SCID.json \
+    --originals_dir data/SCID/jpg \
+    --attack_dir data/SCID/attack_images \
+    --target_dir data/SCID
+```
+
+该脚本自动生成：
+- `train.txt` — 40 行，训练集路径和标签
+- `test.txt` — 40 行，测试集（查询集）路径和标签
+- `database.txt` — 1360 行，数据库集路径和标签
+
+### 步骤 6：训练教师模型（ViT-B/16）
+
+```bash
+python main_paddle.py --dataset scid --model_name vit_b_16 --train \
+    --encode_length 64 --epochs 100 --lr 0.0005 \
+    --batch_size 128 --num_bad_epochs 10 --num_workers 4 --trail 1
+```
+
+**训练产物：** `checkpoints/scid_vit_b_16_bit64_teacher.pt`
+
+### 步骤 7：训练学生模型（BRCD 知识蒸馏）
+
+> **前提：教师模型必须先训练完成（步骤 6）。**
+
+将 ViT-B/16（教师）的知识蒸馏到 MobileNet V2（学生）：
+
+```bash
+python ours_distill_main_paddle.py --s_model_name mobilenet_v2 \
+    --t_model_name vit_b_16 --train --dataset scid \
+    --encode_length 64 --epochs 400 --lr 0.0005 \
+    --alpha 0.8 --batch_size 128 --num_bad_epochs 10 \
+    --num_workers 4 --trail 1
+```
+
+**训练产物：**
+- `checkpoints/ours_scid_mobilenet_v2_vit_b_16__1_bit_64.pt` — 学生最佳模型
+- `checkpoints/ours_distill_scid_mobilenet_v2_vit_b_16__1_bit_64.pt` — 蒸馏最佳模型
+
+### 步骤 8：启动 Web 图像检索服务（可选）
+
+```bash
+python app.py
+# 然后在浏览器打开 http://127.0.0.1:5000
+```
+
+---
+
+## 完整流程总览
+
+```
+第一步：下载 SCID 原始图像 (40张) → data/SCID/jpg/
+         │
+         ▼
+第二步：运行 image_attack.py → 生成 1360 张攻击图像到 attack_images/
+         │
+         ▼
+第三步：运行 create_txt_files.py → 生成 train.txt / test.txt / database.txt
+         │
+         ▼
+第四步：运行 main_paddle.py → 训练教师模型 → checkpoints/*_teacher.pt
+         │
+         ▼
+第五步：运行 ours_distill_main_paddle.py → 训练学生模型 → checkpoints/ours_*_distill_*.pt
+         │
+         ▼
+第六步：运行 app.py → 启动 Web 检索服务 (http://127.0.0.1:5000)
+```
+
+---
+
+## 参数说明
+
+### 教师模型训练参数
+
+| 参数 | 值 | 含义 |
+|------|-----|------|
+| `--dataset` | scid | 加载 SCID 数据集 |
+| `--model_name` | vit_b_16 | 骨干网络 Vision Transformer B/16 |
+| `--encode_length` | 64 | 生成 64 位哈希码 |
+| `--epochs` | 100 | 最大训练 100 轮 |
+| `--lr` | 0.0005 | 学习率 5e-4 |
+| `--batch_size` | 128 | 每批 128 张图 |
+| `--num_bad_epochs` | 10 | 连续 10 轮无提升则早停 |
+
+### 学生模型蒸馏参数
+
+| 参数 | 值 | 含义 |
+|------|-----|------|
+| `--s_model_name` | mobilenet_v2 | 学生模型（轻量，推理快） |
+| `--t_model_name` | vit_b_16 | 教师模型（从 checkpoint 加载） |
+| `--alpha` | 0.8 | 蒸馏损失权重 |
+| `--epochs` | 400 | 最大训练 400 轮 |
+| `--lr` | 0.0005 | 学习率 5e-4 |
+
+---
+
+## 其他学生模型选项
+
+### 使用 ResNet34 作为学生模型
+
+```bash
+python ours_distill_main_paddle.py --s_model_name resnet34 \
+    --t_model_name vit_b_16 --train --dataset scid \
+    --encode_length 64 --epochs 400 --lr 0.0005 \
+    --alpha 0.8 --batch_size 128 --num_bad_epochs 10 \
+    --num_workers 4 --trail 1
+```
+
+### 使用 EfficientNet-B0 作为学生模型
+
+```bash
+python ours_distill_main_paddle.py --s_model_name efficientnet_b0 \
+    --t_model_name vit_b_16 --train --dataset scid \
+    --encode_length 64 --epochs 400 --lr 0.0005 \
+    --alpha 0.8 --batch_size 128 --num_bad_epochs 10 \
+    --num_workers 4 --trail 1
+```
+
+---
+
+## CIFAR-10 数据集简化流程
+
+如果使用 **CIFAR-10 数据集**，不需要手动准备数据（会自动下载），直接跳到步骤 6 即可：
+
+```bash
+# 教师模型训练
+python main_paddle.py --dataset cifar10 --model_name vit_b_16 --train \
+    --encode_length 64 --epochs 200 --lr 0.0005 \
+    --batch_size 128 --num_bad_epochs 3 --num_workers 4 --trail 1
+
+# 学生模型蒸馏
+python ours_distill_main_paddle.py --s_model_name mobilenet_v2 \
+    --t_model_name vit_b_16 --train --dataset cifar10 \
+    --encode_length 64 --epochs 400 --lr 0.0005 \
+    --alpha 0.8 --batch_size 128 --num_bad_epochs 10 \
+    --num_workers 4 --trail 1
+```
+
+---
+
+## 注意事项
+
+1. **Notebook 命令格式**：在 AI Studio 的 Jupyter Notebook 单元格中，每条命令前必须加 `!`（表示执行 shell 命令）。
+
+2. **使用绝对路径**：AI Studio 中所有路径建议使用 `/home/aistudio/` 开头的绝对路径，避免相对路径导致的权限问题或路径错误。
+
+3. **提前创建目录**：运行脚本前，先用 `mkdir -p` 手动创建所需的输出目录。
+
+4. **GPU 编号**：如果有多块 GPU，修改 `--device` 参数（0/1/2/...）。
+
+5. **训练时长预估**：
+   - 教师模型（100 epochs）：约 1-2 小时（取决于 GPU）
+   - 学生模型（400 epochs）：约 2-4 小时（取决于 GPU）
+
+6. **查看训练日志**：
+   ```bash
+   ls -lt logs/
+   tail -f logs/*.log
+   ```
+
+---
+
+## 如何运行 (详细命令)
 
 #### 1. 训练教师模型
 
