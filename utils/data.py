@@ -1,3 +1,6 @@
+# PaddlePaddle 兼容层
+from paddle_compat import torch
+
 # 位于 data.py 文件的最上方
 import numpy as np
 import os

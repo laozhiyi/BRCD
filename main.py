@@ -1,4 +1,6 @@
-# # import argparse
+# PaddlePaddle 兼容层
+from paddle_compat import torch
+# import argparse
 # import torch
 # # import torch.nn as nn
 # import random

@@ -1,3 +1,6 @@
+# PaddlePaddle 兼容层
+from paddle_compat import torch
+
 # import torch
 # import argparse
 # import torchvision
